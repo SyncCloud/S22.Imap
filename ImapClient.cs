@@ -9,6 +9,7 @@ using System.Net;
 using System.Net.Mail;
 using System.Net.Security;
 using System.Net.Sockets;
+using System.Reflection;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -557,6 +558,21 @@ namespace S22.Imap {
 			}
 		}
 
+	    byte[] GetBytes(int byteCount) {
+            byte[] buffer = new byte[4096];
+            using (var mem = new MemoryStream()) {
+                lock (readLock) {
+                    while (byteCount > 0) {
+                        int request = byteCount > buffer.Length ? buffer.Length : byteCount;
+                        int read = stream.Read(buffer, 0, request);
+                        mem.Write(buffer, 0, read);
+                        byteCount = byteCount - read;
+                    }
+                }
+                return mem.ToArray();
+            }
+        }
+
 		/// <summary>
 		/// Returns an enumerable collection of capabilities the IMAP server supports. All strings in
 		/// the returned collection are guaranteed to be upper-case.
@@ -1093,47 +1109,69 @@ namespace S22.Imap {
 			AssertValid();
 			switch (options) {
 				case FetchOptions.HeadersOnly:
+			        return GetMailHeaderB(uid, seen, mailbox).ToMailMessage();
 					return MessageBuilder.FromHeader(GetMailHeader(uid, seen, mailbox));
 				case FetchOptions.NoAttachments:
+			        return GetMessageB(uid, p => p.Disposition.Type != ContentDispositionType.Attachment, seen, mailbox).ToMailMessage();
 					return GetMessage(uid, p => { return p.Disposition.Type !=
 						ContentDispositionType.Attachment; }, seen, mailbox);
 				case FetchOptions.TextOnly:
+			        return GetMessageB(uid, p => p.Type == ContentType.Text, seen, mailbox).ToMailMessage();
 					return GetMessage(uid, p => { return p.Type == ContentType.Text; },
 						seen, mailbox);
 				default:
+			        using (var stream = GetMessageDataB(uid, seen, mailbox)) {
+			            return OpenPop.Mime.Message.Load(stream).ToMailMessage();
+			        }
 					return MessageBuilder.FromMIME822(GetMessageData(uid, seen, mailbox));
 			}
 		}
 
-		/// <summary>
-		/// Retrieves the mail message with the specified unique identifier (UID) while only fetching
-		/// those parts of the message that satisfy the condition of the specified delegate. 
-		/// </summary>
-		/// <param name="uid">The unique identifier of the mail message to retrieve.</param>
-		/// <param name="callback">A delegate which will be invoked for every MIME body-part of the
-		/// mail message to determine whether the part should be fetched from the server or
-		/// skipped.</param>
-		/// <param name="seen">Set this to true to set the \Seen flag for this message on the
-		/// server.</param>
-		/// <param name="mailbox">The mailbox the message will be retrieved from. If this parameter is
-		/// omitted, the value of the DefaultMailbox property is used to determine the mailbox to
-		/// operate on.</param>
-		/// <returns>An initialized instance of the MailMessage class representing the fetched mail
-		/// message.</returns>
-		/// <exception cref="ArgumentNullException">The callback parameter is null.</exception>
-		/// <exception cref="BadServerResponseException">The mail message could not be fetched. The
-		/// message property of the exception contains the error message returned by the
-		/// server.</exception>
-		/// <exception cref="ObjectDisposedException">The ImapClient object has been disposed.</exception>
-		/// <exception cref="IOException">There was a failure writing to or reading from the
-		/// network.</exception>
-		/// <exception cref="NotAuthenticatedException">The method was called in non-authenticated
-		/// state, i.e. before logging in.</exception>
-		/// <remarks>A unique identifier (UID) is a 32-bit value assigned to each message which uniquely
-		/// identifies the message within the respective mailbox. No two messages in a mailbox share
-		/// the same UID.</remarks>
-		/// <include file='Examples.xml' path='S22/Imap/ImapClient[@name="GetMessage-3"]/*'/>
-		public MailMessage GetMessage(uint uid, ExaminePartDelegate callback,
+	    public OpenPop.Mime.Message GetMessageB(uint uid, FetchOptions options, bool seen, string mailbox) {
+            AssertValid();
+            switch (options) {
+                case FetchOptions.HeadersOnly:
+                    return GetMailHeaderB(uid, seen, mailbox);
+                case FetchOptions.NoAttachments:
+                    return GetMessageB(uid, p => p.Disposition.Type != ContentDispositionType.Attachment, seen, mailbox);
+                case FetchOptions.TextOnly:
+                    return GetMessageB(uid, p => p.Type == ContentType.Text, seen, mailbox);
+                default:
+                    using (var stream = GetMessageDataB(uid, seen, mailbox)) {
+                        return OpenPop.Mime.Message.Load(stream);
+                    }
+            }
+        }
+
+        /// <summary>
+        /// Retrieves the mail message with the specified unique identifier (UID) while only fetching
+        /// those parts of the message that satisfy the condition of the specified delegate. 
+        /// </summary>
+        /// <param name="uid">The unique identifier of the mail message to retrieve.</param>
+        /// <param name="callback">A delegate which will be invoked for every MIME body-part of the
+        /// mail message to determine whether the part should be fetched from the server or
+        /// skipped.</param>
+        /// <param name="seen">Set this to true to set the \Seen flag for this message on the
+        /// server.</param>
+        /// <param name="mailbox">The mailbox the message will be retrieved from. If this parameter is
+        /// omitted, the value of the DefaultMailbox property is used to determine the mailbox to
+        /// operate on.</param>
+        /// <returns>An initialized instance of the MailMessage class representing the fetched mail
+        /// message.</returns>
+        /// <exception cref="ArgumentNullException">The callback parameter is null.</exception>
+        /// <exception cref="BadServerResponseException">The mail message could not be fetched. The
+        /// message property of the exception contains the error message returned by the
+        /// server.</exception>
+        /// <exception cref="ObjectDisposedException">The ImapClient object has been disposed.</exception>
+        /// <exception cref="IOException">There was a failure writing to or reading from the
+        /// network.</exception>
+        /// <exception cref="NotAuthenticatedException">The method was called in non-authenticated
+        /// state, i.e. before logging in.</exception>
+        /// <remarks>A unique identifier (UID) is a 32-bit value assigned to each message which uniquely
+        /// identifies the message within the respective mailbox. No two messages in a mailbox share
+        /// the same UID.</remarks>
+        /// <include file='Examples.xml' path='S22/Imap/ImapClient[@name="GetMessage-3"]/*'/>
+        public MailMessage GetMessage(uint uid, ExaminePartDelegate callback,
 			bool seen = true, string mailbox = null) {
 			AssertValid();
 			callback.ThrowIfNull("callback");
@@ -1150,6 +1188,48 @@ namespace S22.Imap {
 						if (callback(part) == true) {
 							string content = GetBodypart(uid, part.PartNumber, seen, mailbox);
 							message.AddBodypart(part, content);
+						}
+					}
+				} catch (FormatException) {
+					throw new BadServerResponseException("The server returned an erroneous " +
+						"body structure:" + structure);
+				}
+				ResumeIdling();
+				return message;
+			}
+		}
+
+        public OpenPop.Mime.Message GetMessageB(uint uid, ExaminePartDelegate callback,
+			bool seen = true, string mailbox = null) {
+			AssertValid();
+			callback.ThrowIfNull("callback");
+			lock (sequenceLock) {
+				PauseIdling();
+				SelectMailbox(mailbox);
+
+			    var message = GetMailHeaderB(uid, seen, mailbox);
+				string structure = GetBodystructure(uid, mailbox);
+				try {
+					Bodypart[] parts = Bodystructure.Parse(structure);
+					foreach (Bodypart part in parts) {
+						// Let the delegate decide whether the part should be fetched or not.
+						if (callback(part) == true) {
+						    var p = GetBodypartB(
+						        message.Headers, uid,
+						        part.PartNumber,
+						        seen, mailbox);
+
+						    if (message.MessagePart.MessageParts == null) {
+						        var type = typeof (OpenPop.Mime.MessagePart);
+						        var prop = type.GetProperty(
+						            "MessageParts", BindingFlags.Instance |
+                                        BindingFlags.Public | BindingFlags.NonPublic);
+                                prop.SetValue(
+                                    message.MessagePart,
+                                    new List<OpenPop.Mime.MessagePart>(4));
+						    }
+
+						    message.MessagePart.MessageParts.Add(p);
 						}
 					}
 				} catch (FormatException) {
@@ -1397,6 +1477,40 @@ namespace S22.Imap {
 			}
 		}
 
+	    OpenPop.Mime.Message GetMailHeaderB(uint uid, bool seen = true, string mailbox = null) {
+	        AssertValid();
+			lock (sequenceLock) {
+				PauseIdling();
+				SelectMailbox(mailbox);
+				StringBuilder builder = new StringBuilder();
+				string tag = GetTag();
+				string response = SendCommandGetResponse(tag + "UID FETCH " + uid + " (BODY" +
+					(seen ? null : ".PEEK") + "[HEADER])", false);
+
+			    using (var ms = new MemoryStream()) {
+			        while (response.StartsWith("*")) {
+			            Match m = Regex.Match(response, @"\* \d+ FETCH .* {(\d+)}");
+			            if (m.Success) {
+			                int size = Convert.ToInt32(m.Groups[1].Value);
+			                var data = GetBytes(size);
+                            ms.Write(data, 0, data.Length);
+			                response = GetResponse();
+			                if (!Regex.IsMatch(response, @"\)\s*$"))
+			                    throw new BadServerResponseException(response);
+			            }
+			            response = GetResponse(false);
+			        }
+			        ResumeIdling();
+			        if (!IsResponseOK(response, tag))
+			            throw new BadServerResponseException(response);
+
+			        ms.Seek(0, SeekOrigin.Begin);
+			        var msg = OpenPop.Mime.Message.Load(ms);
+			        return msg;
+			    }
+			}
+	    }
+
 		/// <summary>
 		/// Retrieves the body structure for the mail message with the specified unique identifier (UID).
 		/// </summary>
@@ -1491,6 +1605,52 @@ namespace S22.Imap {
 			}
 		}
 
+	    OpenPop.Mime.MessagePart GetBodypartB(
+            OpenPop.Mime.Header.MessageHeader headers, uint uid,
+            string partNumber, bool seen = true, string mailbox = null) {
+
+	        AssertValid();
+			lock (sequenceLock) {
+				PauseIdling();
+				SelectMailbox(mailbox);
+				StringBuilder builder = new StringBuilder();
+				string tag = GetTag();
+				string response = SendCommandGetResponse(tag + "UID FETCH " + uid +
+					" (BODY" + (seen ? null : ".PEEK") + "[" + partNumber + "])", false);
+                using (var ms = new MemoryStream()) { 
+				    while (response.StartsWith("*")) {
+					    Match m = Regex.Match(response, @"\* \d+ FETCH .* {(\d+)}");
+					    if (m.Success) {
+						    int size = Convert.ToInt32(m.Groups[1].Value);
+					        var data = GetBytes(size);
+                            ms.Write(data, 0, data.Length);
+						    response = GetResponse();
+						    if (!Regex.IsMatch(response, @"\)\s*$"))
+							    throw new BadServerResponseException(response);
+					    } else {
+						    // Some servers inline the data in the FETCH response line.
+						    m = Regex.Match(response, "\\* \\d+ FETCH \\(.*\"(.*)\".*\\)");
+						    if (m.Success)
+							    builder.Append(m.Groups[1]);
+					    }
+					    response = GetResponse(false);
+				    }
+				    ResumeIdling();
+				    if (!IsResponseOK(response, tag))
+					    throw new BadServerResponseException(response);
+
+                    var type = typeof (OpenPop.Mime.MessagePart);
+
+                    var ctor = type.GetConstructor(
+                        BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance, Type.DefaultBinder,
+                        new [] { typeof (byte[]), typeof (OpenPop.Mime.Header.MessageHeader) }, new ParameterModifier[0]);
+
+                    return (OpenPop.Mime.MessagePart) ctor.Invoke(
+                        new object[] { ms.ToArray(), headers });
+                }
+			}
+	    }
+
 		/// <summary>
 		/// Retrieves the raw MIME/RFC822 mail message data for the mail message with the specified UID.
 		/// </summary>
@@ -1536,6 +1696,36 @@ namespace S22.Imap {
 				return builder.ToString();
 			}
 		}
+
+	    Stream GetMessageDataB(uint uid, bool seen = true, string mailbox = null) {
+            AssertValid();
+			lock (sequenceLock) {
+				PauseIdling();
+				SelectMailbox(mailbox);
+				string tag = GetTag();
+				string response = SendCommandGetResponse(tag + "UID FETCH " + uid +
+					" (BODY" + (seen ? null : ".PEEK") + "[])", false);
+                var ms = new MemoryStream();
+				while (response.StartsWith("*")) {
+					Match m = Regex.Match(response, @"\* \d+ FETCH .* {(\d+)}");
+					if (m.Success) {
+						int size = Convert.ToInt32(m.Groups[1].Value);
+					    var data = GetBytes(size);
+					    ms.Write(data, 0, data.Length);
+						response = GetResponse();
+						if (!Regex.IsMatch(response, @"\)\s*$"))
+							throw new BadServerResponseException(response);
+					}
+					response = GetResponse(false);
+				}
+				ResumeIdling();
+				if (!IsResponseOK(response, tag))
+					throw new BadServerResponseException(response);
+
+			    ms.Seek(0, SeekOrigin.Begin);
+                return ms;
+			}
+	    }
 
 		/// <summary>
 		/// Retrieves the highest UID in the specified mailbox.

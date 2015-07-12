@@ -292,6 +292,8 @@ namespace S22.Imap {
 		/// <include file='Examples.xml' path='S22/Imap/ImapClient[@name="GetMessage-2"]/*'/>
 		MailMessage GetMessage(uint uid, FetchOptions options, bool seen = true, string mailbox = null);
 
+	    OpenPop.Mime.Message GetMessageB(uint uid, FetchOptions options, bool seen = true, string mailbox = null);
+
 		/// <summary>
 		/// Retrieves the mail message with the specified unique identifier (UID) while only fetching
 		/// those parts of the message that satisfy the condition of the specified delegate. 
