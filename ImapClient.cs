@@ -1645,8 +1645,13 @@ namespace S22.Imap {
                         BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance, Type.DefaultBinder,
                         new [] { typeof (byte[]), typeof (OpenPop.Mime.Header.MessageHeader) }, new ParameterModifier[0]);
 
-                    return (OpenPop.Mime.MessagePart) ctor.Invoke(
-                        new object[] { ms.ToArray(), headers });
+                    try {
+                        return (OpenPop.Mime.MessagePart) ctor.Invoke(
+                            new object[] { ms.ToArray(), headers });
+                    }
+                    catch (Exception exc) {
+                        throw new LocalException(exc);
+                    }
                 }
 			}
 	    }
